@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -71,41 +72,90 @@ class MyVGGNet(nn.Module):
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, x):
-        x = self.relu(self.block1_conv1(x))
-        x = self.relu(self.block1_conv2(x))
-        x = self.pool(x)
+        out = self.relu(self.block1_conv1(x))
+        out = self.relu(self.block1_conv2(out))
+        out = self.pool(out)
 
-        x = self.relu(self.block2_conv1(x))
-        x = self.relu(self.block2_conv2(x))
-        x = self.pool(x)
+        out = self.relu(self.block2_conv1(out))
+        out = self.relu(self.block2_conv2(out))
+        out = self.pool(out)
 
-        x = self.relu(self.block3_conv1(x))
-        x = self.relu(self.block3_conv2(x))
-        x = self.pool(x)
+        out = self.relu(self.block3_conv1(out))
+        out = self.relu(self.block3_conv2(out))
+        out = self.pool(out)
 
-        x = self.relu(self.block4_conv1(x))
-        x = self.relu(self.block4_conv2(x))
-        x = self.pool(x)
+        out = self.relu(self.block4_conv1(out))
+        out = self.relu(self.block4_conv2(out))
+        out = self.pool(out)
 
-        x = self.relu(self.block5_conv1(x))
-        x = self.relu(self.block5_conv2(x))
-        x = self.pool(x)
+        out = self.relu(self.block5_conv1(out))
+        out = self.relu(self.block5_conv2(out))
+        out = self.pool(out)
 
-        x = torch.flatten(x, 1)
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = self.fc3(x)
+        out = torch.flatten(out, 1)
+        out = self.relu(self.fc1(out))
+        out = self.relu(self.fc2(out))
+        out = self.dropout(out)
+        out = self.fc3(out)
 
-        return x
+        return out
 
 
-class MyResNet(nn.Module):
-    def __init__(self):
+class BasicBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride=stride, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, stride=stride),
+                nn.BatchNorm2d(out_channels)
+            )
 
     def forward(self, x):
-        return x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = self.relu(out)
+        return out
+
+class MyResNet(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10):
+        super().__init__()
+        self.in_channels = 64
+
+        self.conv1 = nn.Conv2d(3, 64, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU()
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.avg_pool = nn.AvgPool2d(4)
+        self.fc = nn.Linear(512, num_classes)
+
+    def _make_layer(self, block, out_channels, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_channels, out_channels, stride))
+            self.in_channels = out_channels
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.avg_pool(out)
+        out = torch.flatten(out, 1)
+        out = self.fc(out)
+        return out
 
 
 def test(testloader, net, classes):
@@ -151,42 +201,61 @@ def test(testloader, net, classes):
 if __name__ == "__main__":
     # load data
     trainloader, testloader, classes = load_data()
-    # init model
-    net = MyVGGNet()
-    # use GPU acceleration
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    net = net.to(device)
-    # criterion and optimizer
-    criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = optim.Adam(net.parameters(), lr=0.001)
 
-    for epoch in range(10):  # loop over the dataset multiple times
+    # choose a model
+    print('[0]: MyVGGNet')
+    print('[1]: MyResNet')
+    print('other: BaselineNet')
+    model = int(input('Choose a model: '))
+    if model == 0:
+        net = MyVGGNet().to(device)
+        ckpt_path = 'vgg.pth'
+    elif model == 1:
+        net = MyResNet(BasicBlock, [2, 2, 2, 2]).to(device)
+        ckpt_path = 'resnet.pth'
+    else:
+        net = BaselineNet().to(device)
+        ckpt_path = 'baseline.pth'
 
-        running_loss = 0.0
-        for i, data in enumerate(trainloader, 0):
-            # get the inputs; data is a list of [inputs, labels]
-            inputs, labels = data
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+    if os.path.exists(ckpt_path):
+        print('Loading model...')
+        net.load_state_dict(torch.load(ckpt_path))
+        print('Model loaded.')
+    else:
+        print('No model found.')
+        print('Training model...')
 
-            # zero the parameter gradients
-            optimizer.zero_grad()
+        # criterion and optimizer
+        criterion = nn.CrossEntropyLoss().to(device)
+        optimizer = optim.Adam(net.parameters(), lr=0.001)
 
-            # forward + backward + optimize
-            outputs = net(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+        for epoch in range(10):  # loop over the dataset multiple times
+            running_loss = 0.0
+            for i, data in enumerate(trainloader, 0):
+                # get the inputs; data is a list of [inputs, labels]
+                inputs, labels = data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
 
-            # print statistics
-            running_loss += loss.item()
-            if i % 100 == 99:  # print every 2000 mini-batches
-                print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 2000:.3f}')
-                running_loss = 0.0
+                # zero the parameter gradients
+                optimizer.zero_grad()
 
-    print('Finished Training')
+                # forward + backward + optimize
+                outputs = net(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+                # print statistics
+                running_loss += loss.item()
+                if i % 100 == 99:  # print every 2000 mini-batches
+                    print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 2000:.3f}')
+                    running_loss = 0.0
+
+        print('Finished Training')
 
     test(testloader, net, classes)
 
-    ckpt_path = './cifar_net.pth'
+    # save model
     torch.save(net.state_dict(), ckpt_path)
